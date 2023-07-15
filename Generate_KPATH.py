@@ -8,9 +8,9 @@ def main():
     '''
 
     library = init() #Initialize with Lattice_Information.txt
-    kpath_matrix, total_kpoints, lattice_type, kpath = ask(library) #Get parameters from user
-    fraction, number = generate_kpath(kpath_matrix, total_kpoints) #Generate kpoints between kpath's high symmetry points
-    write_file(fraction, lattice_type, kpath, number) #Write 3 files: klist_band, KPOINTS and klabel
+    kpath_matrix, lattice_type, kpath, total_kpoints = ask(library) #Get parameters from user
+    all_kpath, number, N = generate_kpath(kpath_matrix, total_kpoints) #Generate kpoints between kpath's high symmetry points
+    write_file(all_kpath, number, lattice_type, kpath) #Write 2 files: KPOINTS and klabel
 
 def init():
 
@@ -69,9 +69,9 @@ def ask(library):
     
     kpath_matrix, kpath = ask_kpath(library, lattice_type)
     
-    total_kpoints = ask_total_kpoints()
+    total_kpoints = ask_total_kpoints(kpath_matrix)
     
-    return kpath_matrix, total_kpoints, lattice_type, kpath
+    return kpath_matrix, lattice_type, kpath, total_kpoints
 
 def ask_lattice_type(library):
 
@@ -115,10 +115,18 @@ def ask_kpath(library, lattice_type):
 
     return kpath_matrix, kpath
 
-def ask_total_kpoints():
+def ask_total_kpoints(kpath_matrix):
+    
+    kpath_delta = kpath_matrix[1:] - kpath_matrix[0:-1]
+    length = np.linalg.norm(kpath_delta, axis = 1)
+    
+    weight = np.array(np.round(length*100),dtype='int32')
+    gcd = np.gcd.reduce(weight)
+    weight //= gcd
+    recommend = weight.sum()
     
     try:
-        total_kpoints = int(input('Enter total kpoints\n'))
+        total_kpoints = int(input(f'Enter total kpoints (Recommened:{recommend}*N+1 where N is integer)\n'))
     except:
         sys.stderr.write('Invalid argumets!\n')
         
@@ -128,91 +136,62 @@ def generate_kpath(kpath_matrix, total_kpoints):
 
     kpath_delta = kpath_matrix[1:] - kpath_matrix[0:-1]
     length = np.linalg.norm(kpath_delta, axis = 1)
-    total_length = length.sum()
-    kpoints_number_of_each_kpath = np.round(total_kpoints*length/total_length)
-
-    for i, N in enumerate(kpoints_number_of_each_kpath):
+    
+    partition = np.round((total_kpoints-1)*(length/length.sum()))
+    partition = np.array(partition,dtype='int32')
+    N = total_kpoints-1-partition.sum() #The kpoints which are still not arrange
+    I = np.identity(partition.shape[0],dtype='int32')
+    
+    if N>0:
+    
+        for i in range(N):
         
-        N = int(N)
+            all_partition = partition+I
         
-        start = np.array(kpath_matrix[i])
-        end = np.array(kpath_matrix[i+1])
-        denominator = 10000
-
-        start *= denominator
-        end *= denominator
-
-        start_end_denominator = np.append(np.append(start,end),denominator)
-        gcd = np.gcd.reduce(np.array(start_end_denominator, dtype='int32'))
-
-        start = np.rint(start/gcd)
-        end = np.rint(end/gcd)
-        denominator //= gcd
-
-        delta_N = np.append(np.rint(end - start), N)
-        gcd = np.gcd.reduce(np.array(delta_N, dtype='int32'))
-
-        start = np.rint(start*N//gcd)
-        end = np.rint(end*N//gcd)
-        denominator *= N//gcd
+            density = all_partition/length
+            den_std = np.std(density,axis=1)
         
-        if i == 0:
-
-            if len(kpoints_number_of_each_kpath) == 1:
-                kpath = np.linspace(start, end, N+1)
-            else:
-                kpath = np.linspace(start, end, N, endpoint=False)
+            partition = all_partition[den_std==min(den_std)][0]
             
-            denominators = np.full((kpath.shape[0], 1), denominator)
-            kpath_denominators = np.append(kpath, denominators,1)
+    elif N<0:
+    
+        for i in range(-N):
+        
+            all_partition = partition-I
+        
+            density = all_partition/length
+            den_std = np.std(density,axis=1)
+        
+            partition = all_partition[den_std==min(den_std)][0]
+            
+    else:
+        pass
+        
+    all_kpath = np.zeros(shape=(total_kpoints,3))
+    
+    number = [0]
+    
+    for ki, kf, p in zip(kpath_matrix[0:-1],kpath_matrix[1:],partition):
+        
+        i = number[-1]
+        
+        all_kpath[i:i+p] = np.linspace(ki,kf,p,endpoint=False)
+        
+        number.append(i + p)
+        
+    all_kpath[-1] = kpath_matrix[-1]
+    
+    return all_kpath, number, N
 
-        elif i == len(kpoints_number_of_each_kpath) - 1:
-            kpath = np.linspace(start, end, N+1)
-            denominators = np.full((kpath.shape[0], 1), denominator)
-            kpath_denominators_new = np.append(kpath, denominators,1)
-            kpath_denominators = np.append(kpath_denominators, kpath_denominators_new, 0)
-
-        else:
-            kpath = np.linspace(start, end, N, endpoint=False)
-            denominators = np.full((kpath.shape[0], 1), denominator)
-            kpath_denominators_new = np.append(kpath, denominators,1)
-            kpath_denominators = np.append(kpath_denominators, kpath_denominators_new, 0)
-
-    return np.array(kpath_denominators, dtype='int32'), kpoints_number_of_each_kpath
-
-def write_file(fraction, lattice_type, kpath, number):
+def write_file(all_kpath, number, lattice_type, kpath):
 
     filename = input('Enter the filename to save file\n')
-
-    write_klist_band(filename, fraction)
     
-    write_KPOINTS(filename, fraction)
+    write_KPOINTS(filename, all_kpath)
 
     write_klabel(filename, lattice_type, kpath, number)
 
-def write_klist_band(filename, fraction):
-
-    with open(filename + '.klist_band', 'w') as fh:
-
-        for i, k in enumerate(fraction):
-            
-            line = ' '*(15 - len(str(k[0]))) + str(k[0])
-            line += ' '*(5 - len(str(k[1]))) + str(k[1])
-            line += ' '*(5 - len(str(k[2]))) + str(k[2])
-            line += ' '*(5 - len(str(k[3]))) + str(k[3])
-            line += ' '*(5 - len('2.0')) + '2.0'
-
-            if i == 0:
-                line += ' '*(5 - len('-1.0')) + '-1.0'
-                line += ' '*(4 - len('1.5')) + '-1.5'
-            
-            fh.write(line+'\n')
-
-        fh.write('END')
-
-    print(f'Successfully create the {filename}.klist_band file!')
-
-def write_KPOINTS(filename, fraction):
+def write_KPOINTS(filename, all_kpath):
     
     with open(f'KPOINTS_{filename}', 'w') as fh:
         
@@ -225,13 +204,13 @@ def write_KPOINTS(filename, fraction):
         line = 'Cartesian'
         fh.write(line+'\n')
         
-        for i, k in enumerate(fraction):
+        for k in all_kpath:
             
-            kx   = k[0]/k[3]
+            kx   = k[0]
             line = f'{kx:7f}' + ' '*(10 - len(f'{kx:7f}'))
-            ky   = k[1]/k[3]
+            ky   = k[1]
             line += f'{ky:7f}' + ' '*(10 - len(f'{ky:7f}'))
-            kz   = k[2]/k[3]
+            kz   = k[2]
             line += f'{kz:7f}'
             
             fh.write(line+'\n')
@@ -263,6 +242,7 @@ def write_klabel(filename, lattice_type, kpath, number):
             fh.write(line+'\n')
 
     print(f'Successfully create the klabel file!')
+
 
 if __name__ == '__main__':
     main()
